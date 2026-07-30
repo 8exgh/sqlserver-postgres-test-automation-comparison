@@ -225,6 +225,25 @@ until docker compose exec -T postgres pg_isready -U "$TGT_USER" -d "$TGT_DB" >/d
 done
 printf '    %-12s ok (%s:%s/%s)\n' "postgres" "$TGT_HOST" "$TGT_PORT" "$TGT_DB"
 
+#--- make the conversion reproducible ---------------------------------------
+# SCT reads the *target* database and folds its current state into the schema
+# mapping, so converting twice against a target that already holds a previous
+# result produced different output (8 schemas / 4212 lines vs 7 / 4897). The
+# generated file has to be a function of the source alone, so the converted
+# schemas are cleared first.
+#
+# With this in place two consecutive runs produce byte-identical SQL. The only
+# residual difference is the order of action-item codes inside two comment
+# lines, which SCT emits from an unordered set - no generated SQL varies.
+if (( ! REPORT_ONLY )); then
+  log "Clearing previously converted schemas from the target"
+  docker compose exec -T postgres psql -U "$TGT_USER" -d "$TGT_DB" --quiet --no-psqlrc \
+    -c "SET client_min_messages = warning;" \
+    -c "DROP SCHEMA IF EXISTS ${TGT_DB}_ref, ${TGT_DB}_client, ${TGT_DB}_tax,
+                              ${TGT_DB}_acct, ${TGT_DB}_payroll, ${TGT_DB}_audit,
+                              ${TGT_DB}_util, ${TGT_DB}_dbo CASCADE;" >/dev/null 2>&1 || true
+fi
+
 #--- workspace ---------------------------------------------------------------
 log "Preparing workspace"
 # The SCT project must not already exist, or CreateProject fails.
@@ -531,6 +550,29 @@ if [[ -s "$SQL_OUT_FILE" ]]; then
     "$(grep -cE '^CREATE TRIGGER' "$SQL_OUT_FILE" || true)" \
     "$(grep -cE '^CREATE SEQUENCE' "$SQL_OUT_FILE" || true)" \
     "$(grep -ci 'FOREIGN KEY' "$SQL_OUT_FILE" || true)"
+
+  # Object counts alone would not have caught the worst thing SCT did: it
+  # dropped the GENERATED expression from five computed columns while leaving
+  # the columns in place, so every count still matched. Compare the generated
+  # column count against the source instead.
+  SRC_COMPUTED="$(docker compose exec -T sqlserver /opt/mssql-tools18/bin/sqlcmd \
+      -C -S localhost -U sa -P "$SRC_PASSWORD" -d "$SRC_DB" -I -h-1 -W \
+      -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.computed_columns;" 2>/dev/null \
+      | tr -d ' \r' | head -1)"
+  OUT_COMPUTED="$(grep -c 'GENERATED ALWAYS AS (' "$SQL_OUT_FILE" || true)"
+  printf '    computed columns    : %s of %s carried over\n' "${OUT_COMPUTED:-0}" "${SRC_COMPUTED:-?}"
+  if [[ -n "$SRC_COMPUTED" ]] && (( ${OUT_COMPUTED:-0} < SRC_COMPUTED )); then
+    err "SCT dropped $(( SRC_COMPUTED - OUT_COMPUTED )) computed column expression(s)."
+    err "It leaves the column in place with its GENERATED clause removed, so no"
+    err "object count reveals this - action item 7811 skips the CONVERT() call and"
+    err "takes the whole expression with it."
+    err ""
+    err "The generated SQL and the assessment report above are still valid output;"
+    err "this is a defect in the conversion, not in the run. The corrected,"
+    err "hand-finished schema is in db/postgres/ - apply it with"
+    err "scripts/apply-postgres.sh."
+    exit 1
+  fi
 
   # SCT emits an unconvertible object as a stub whose only columns are
   # (text, error_msg), so these are the objects needing a manual port.

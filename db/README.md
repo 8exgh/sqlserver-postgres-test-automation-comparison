@@ -457,6 +457,130 @@ the script.
 
 ---
 
+---
+
+## The PostgreSQL port (`db/postgres/`)
+
+`db/postgres/` is a hand-finished PostgreSQL schema that applies cleanly and
+behaves like the SQL Server source. It was bootstrapped from the AWS SCT output
+in `db/postgres/generated/` and then corrected object by object.
+
+```bash
+scripts/apply-postgres.sh              # apply everything, then verify
+scripts/apply-postgres.sh --only 008   # apply one numbered file
+scripts/reset-postgres.sh              # drop the schemas, rebuild, verify
+scripts/reset-postgres.sh --hard       # also destroy the container volume
+```
+
+Connect on `localhost:15432`, database `cdntaxpractice`. The file numbering
+mirrors `db/sqlserver/` so the two sides read side by side, and the schemas keep
+their bare names (`ref`, `client`, `tax`, `acct`, `payroll`, `audit`, `util`)
+rather than SCT's `cdntaxpractice_*`, so one set of object names works against
+both engines.
+
+**Scope.** Schema, programmability and reference data (`020`). The sample data
+(`021`) is not ported; `db/postgres/099_verify.sql` therefore creates and
+removes its own scratch fixture.
+
+### Verified parity
+
+Both `099_verify.sql` scripts pass. The PostgreSQL one asserts the same values
+as the SQL Server one — `fn_FederalTax(2024, 100000) = 17427.32`,
+`fn_CPPContribution(2024, 100000) = 3867.50`, EI 1049.12 / 834.24 (QC),
+NS HST 15% before 2025-04-01 and 14% after, the Luhn SIN pair, business days
+across the 2024 holidays — plus the error contracts, asserted by SQLSTATE.
+
+| | SQL Server | PostgreSQL |
+|---|---:|---:|
+| Tables | 39 | 39 |
+| Computed / generated columns | 18 | 18 |
+| Views | 9 (1 indexed) | 9 (1 materialized) |
+| Functions | 20 | 20 |
+| Procedures | 12 | 12 |
+| Triggers | 4 | 8 |
+| Foreign keys | 57 | 57 |
+| Unique constraints | 24 | 24 |
+| Filtered / partial indexes | 10 | 10 |
+
+Triggers go from 4 to 8 because PostgreSQL needs one trigger per operation when
+transition tables are used (`OLD TABLE` only exists for UPDATE/DELETE), plus one
+with no SQL Server counterpart that emulates `ROWVERSION`.
+
+A clean rebuild followed by two repeat applies all pass: every file is
+re-runnable (`CREATE ... IF NOT EXISTS`, catalog-guarded constraints,
+`MERGE`-based seeds).
+
+### What AWS SCT got wrong
+
+Everything below was found by applying the output and reading the actual error,
+not by inspection. The three in bold are the dangerous ones: SCT reported
+success and the object counts still matched.
+
+- **Five computed columns silently gutted.** `invoiceline.linetotal`,
+  `t1return.{taxableincome, netfederaltax, netprovincialtax}` and
+  `t2return.taxableincome`. Action item 7811 says it "skips the unsupported
+  CONVERT function" — in fact it drops the whole `GENERATED` expression and
+  leaves the column as a plain `NOT NULL` with no default, so any insert that
+  omits it fails and the value is never computed. `scripts/convert-to-postgres.sh`
+  now fails the run when the generated-column count is short of the source.
+- **The `INSTEAD OF INSERT` trigger on `vw_ClientDirectory` vanished.** No
+  trigger on that view exists anywhere in the generated file, and nothing in the
+  report says one was dropped.
+- **`SET @PostedBy = ISNULL(@PostedBy, SUSER_SNAME())` dropped** from
+  `usp_PostJournalEntry`, leaving `PostedBy` NULL and violating
+  `ck_journalentry_posted` on every post.
+- `client.client` could not be created at all: SCT emulated SQL Server's
+  case-insensitive collation with `LOWER()` inside the generated column
+  replacing `DisplayName`, which PostgreSQL rejects for want of a resolvable
+  collation. That took 74 dependent foreign keys with it.
+- `MERGE` not translated in three procedures (action item 9996), leaving bodies
+  that silently did nothing. PostgreSQL 15+ has `MERGE`; all three are restored.
+- `OPENJSON`, `ISJSON`, `PIVOT`, `DELETE TOP (n)` and `sp_executesql` all left
+  as commented-out T-SQL. Two views were emitted as `(text, error_msg)` stubs.
+- The indexed view was flattened to a plain view, silently losing its
+  materialization.
+- **Wrong casts.** `tax.fn_IsValidSIN` called `fn_PassesLuhn(par_SIN::NUMERIC(18,0))`
+  — a function taking VARCHAR, so the call did not resolve, and the numeric
+  conversion would have stripped the leading zero from a SIN like `046454286`
+  and broken the check digit. Same cast on the business number.
+- **`SELECT @var = expr FROM ...` rendered as `STRING_AGG(col1, '')`** in the two
+  sales-tax rate functions, with the `INTO` nested uselessly inside a subquery.
+  Neither compiled.
+- **`DECLARE ... DEFAULT` used for assignments that must run later.** T-SQL
+  evaluates `DECLARE @x = expr` where it is written; PL/pgSQL evaluates a
+  `DECLARE` default on block entry. SCT hoisted eleven of these above the
+  `SELECT`s they depend on, so they computed from NULLs — silently returning
+  NULL from `fn_CPPContribution`, ignoring the EI maximum, and inserting NULL
+  tax amounts on invoices.
+- `OUTER APPLY` rendered as a bare `CROSS JOIN`, which neither parses without
+  `LATERAL` nor preserves the outer row.
+- BIT columns became `NUMERIC(1,0)` but were still used as booleans
+  (`CASE WHEN fy.isclosed THEN`).
+- Multi-statement table functions staged through temp tables, and every
+  `RETURNING` value staged through one too — the latter leaving a cursor open
+  over a table the next call then could not drop.
+- Everything depended on the `aws_sqlserver_ext` extension pack for `datediff`,
+  `conv_string_to_date` and `tomsbit`; all sixteen call sites are now native.
+
+### Deliberate differences from the source
+
+- **The materialized view is not maintained automatically.** SQL Server updates
+  an indexed view on every write; `REFRESH MATERIALIZED VIEW` is explicit.
+- **`displayname` is case-sensitive.** The `LOWER()` wrappers are kept
+  everywhere except inside that generated column, where they are what broke it.
+  `ck_client_type` already restricts the value to `'I'` or `'C'`.
+- **No synonym.** PostgreSQL has none; `dbo.Clients` is dropped.
+- **`SMALLINT` parameters widened to `INTEGER`.** PostgreSQL will not implicitly
+  narrow an integer literal during function resolution, so
+  `tax.fn_FederalTax(2024, 100000)` would not have resolved at all.
+- **Procedures return `INOUT refcursor`.** The caller must pass a cursor
+  variable and reset it between calls.
+- **`audit.changelog.oldvalues/newvalues` are `jsonb`**, which enforces validity
+  by type and makes the two `ISJSON` CHECK constraints redundant — hence 76
+  CHECK constraints against SQL Server's 78.
+
+---
+
 ## T-SQL → PostgreSQL feature map
 
 Written now, while the reasoning is fresh, so the eventual port is a translation
