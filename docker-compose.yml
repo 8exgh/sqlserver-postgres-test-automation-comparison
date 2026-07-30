@@ -1,0 +1,32 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    # This image is amd64-only; on Apple Silicon it runs under Docker Desktop's
+    # emulation layer. First boot takes noticeably longer as a result.
+    platform: linux/amd64
+    container_name: cdntax-sqlserver
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:-Str0ng!Passw0rd}"
+      # Developer edition: needed for the optimizer to consider the indexed view
+      # in acct.vw_FiscalYearRevenue without an explicit NOEXPAND hint.
+      MSSQL_PID: "Developer"
+      MSSQL_COLLATION: "SQL_Latin1_General_CP1_CI_AS"
+    ports:
+      # 11433 on the host so this never collides with a local default instance.
+      - "11433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+      - ./db:/db:ro
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$$MSSQL_SA_PASSWORD" -Q "SELECT 1" -b -t 5 || exit 1
+      interval: 10s
+      timeout: 10s
+      # Generous: emulated first boot can take a couple of minutes.
+      retries: 30
+      start_period: 30s
+
+volumes:
+  mssql-data:
