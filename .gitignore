@@ -2,3 +2,6 @@
 .idea/
 *.log
 llm/
+build/
+lib/jdbc/
+db/postgres/generated/

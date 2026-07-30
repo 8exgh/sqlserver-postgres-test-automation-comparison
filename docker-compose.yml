@@ -28,5 +28,26 @@ services:
       retries: 30
       start_period: 30s
 
+  # Conversion target for AWS SCT. Native arm64, so no emulation needed.
+  postgres:
+    image: postgres:16
+    container_name: cdntax-postgres
+    environment:
+      POSTGRES_USER: "${PGUSER:-postgres}"
+      POSTGRES_PASSWORD: "${PGPASSWORD:-Str0ng!Passw0rd}"
+      POSTGRES_DB: "${PGDATABASE:-cdntaxpractice}"
+    ports:
+      # 15432 so this never collides with a local PostgreSQL install.
+      - "15432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-postgres} -d ${PGDATABASE:-cdntaxpractice}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
 volumes:
   mssql-data:
+  pg-data:

@@ -327,6 +327,136 @@ than one with documented edges.
 
 ---
 
+---
+
+## Converting to PostgreSQL with AWS SCT
+
+`scripts/convert-to-postgres.sh` drives `lib/AWSSchemaConversionToolBatch.jar`
+(AWS Schema Conversion Tool, build 677) against the running SQL Server and
+produces PostgreSQL DDL, an assessment report, and optionally creates the
+objects in the `postgres` service from `docker-compose.yml`.
+
+```bash
+scripts/convert-to-postgres.sh                  # convert + report, writes nothing to PG
+scripts/convert-to-postgres.sh --apply          # also create the objects in PostgreSQL
+scripts/convert-to-postgres.sh --report-only    # assessment report only
+scripts/convert-to-postgres.sh --bootstrap-jvm  # fetch the x86_64 JDK it needs (see below)
+scripts/convert-to-postgres.sh --keep-scenario  # leave the generated .scts for inspection
+```
+
+| Output | Where |
+|---|---|
+| Converted DDL | `db/postgres/generated/cdntaxpractice-postgresql.sql` |
+| Assessment report (CSV + PDF) | `build/sct/report/` |
+| SCT project (openable in the desktop app) | `build/sct/project/` |
+| SCT log | `build/sct/log/sct-run.log` |
+
+The script generates its own SCT scenario each run, so the connection details
+live in one place. It waits for both databases, downloads the JDBC drivers, and
+verifies it actually produced DDL rather than trusting SCT's exit code — SCT
+exits 0 even when a command quietly wrote nothing.
+
+### Four things that will waste your afternoon
+
+Each of these fails in a way that does not name the real cause. All four are
+handled by the script; they are written down because the error messages are
+actively misleading.
+
+1. **The jar will not start.** `java -jar` reports only *"An unexpected error
+   occurred while trying to open file"*. The jar is signed and its
+   `META-INF/SIGNER.SF` is ~31 MB, over the 8 MB cap that JDK 17.0.7+ enforces.
+   Fix: `-Djdk.jar.maxSignatureFileSize=100000000`.
+
+2. **It needs an x86_64 JVM on macOS.** SCT initialises a JavaFX toolkit even in
+   CLI mode and routes every converted object through it, but the macOS JavaFX
+   natives inside the jar (`libglass.dylib` and friends) are x86_64-only. On an
+   arm64 JVM every object fails with *"No toolkit found"* and the conversion
+   writes an empty file **while still exiting 0**. The script refuses to run on
+   an arm64 JVM; `--bootstrap-jvm` fetches Amazon Corretto 17 x64 into
+   `build/jvm/`, which runs fine under Rosetta. (SCT also rejects non-Corretto
+   JREs by vendor name, which is a warning rather than a stop.)
+
+3. **Java 17 module access.** Without `--add-opens java.base/java.lang.reflect`
+   (and a few siblings) the T-SQL parser dies partway with a `PARSER ERROR`
+   about `java.base` not opening `java.lang.reflect`.
+
+4. **Tree paths are dot-separated, and the two sides have different shapes.**
+   A path built with `/` resolves to nothing and surfaces only as an
+   `ArrayIndexOutOfBoundsException` from inside the tool. The first segment is a
+   throwaway label that the resolver strips before treating the next one as the
+   server name. SQL Server nests schemas under a database; PostgreSQL has no
+   `Databases` level at all:
+
+   ```
+   source   Servers.MSSQL.Databases.CdnTaxPractice.Schemas.<schema>
+   target   Servers.POSTGRESQL.Schemas.<schema>
+   ```
+
+   The schema mapping itself is made one level up, database → server
+   (`Servers.MSSQL.Databases.CdnTaxPractice` → `Servers.POSTGRESQL`). Mapping
+   the wildcarded schema paths to each other is rejected, because the target
+   schemas do not exist yet and the wildcard has nothing to match.
+
+The scenario grammar is worth knowing too: commands are terminated by `/` on its
+own line (**not** `;`), arguments are `-name: 'value'`, and `#` starts a comment.
+
+### What the conversion actually produced
+
+Every object type in the schema was converted, matching the source counts:
+
+| | Source | Converted |
+|---|---:|---:|
+| Schemas | 7 (+dbo) | 8 |
+| Tables | 39 | 39 |
+| Views | 9 | 9 (2 as error stubs) |
+| Functions | 20 | 20 (+7 extension-pack helpers) |
+| Procedures | 12 | 12 |
+| Triggers | 4 | 4 (+3 generated) |
+| Sequences | 1 | 1 |
+| Foreign keys | 57 | 57 |
+
+### Known conversion gaps
+
+The script reports these; they are properties of the schema and of SCT, not of
+the script.
+
+- **`MERGE` is not translated.** SCT cannot render T-SQL `MERGE` into
+  PostgreSQL, so the procedures built on it (`usp_UpsertClient`,
+  `usp_ImportSlips`, `usp_RunPayroll`) come out incomplete. Ironic given that
+  PostgreSQL 15+ *does* have `MERGE` — this is a tool limitation.
+- **Two views could not be converted at all** and are emitted as stubs whose
+  only columns are `(text, error_msg)`: `vw_invoiceaging` (uses `PIVOT`) and
+  `vw_recentchanges` (uses `OPENJSON`).
+- **`--apply` leaves the target incomplete.** One table, `client.client`, is
+  rejected by PostgreSQL:
+
+  ```
+  ERROR: could not determine which collation to use for lower() function
+  ```
+
+  SCT emulates SQL Server's case-insensitive collation by wrapping comparisons
+  in `LOWER()`, and it does so inside the generated column that replaces the
+  persisted computed `DisplayName`. PostgreSQL requires a deterministic
+  collation in a generated-column expression and refuses. The 74 foreign keys
+  that reference `client.client` then fail as a consequence, so 38 of 39 tables
+  and 40 of 57 foreign keys land.
+
+  The generated expression is:
+
+  ```sql
+  displayname VARCHAR(150) NOT NULL GENERATED ALWAYS AS (CASE
+      WHEN LOWER(clienttype) = LOWER('C') THEN COALESCE(legalname, '')
+      ELSE CONCAT(COALESCE(lastname, ''), ', ', COALESCE(firstname, ''))
+  END) STORED
+  ```
+
+  Dropping both `LOWER()` calls is safe here — `CK_Client_Type` already
+  restricts `ClientType` to `'I'` or `'C'` — after which the file applies
+  cleanly with `psql`. That edit is left to you rather than being patched in
+  automatically, since it is a porting decision about the schema.
+
+---
+
 ## T-SQL → PostgreSQL feature map
 
 Written now, while the reasoning is fresh, so the eventual port is a translation
