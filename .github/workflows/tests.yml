@@ -6,7 +6,10 @@ name: tests
 # "the two engines agree" re-established.
 on:
   push:
-    branches: [main]
+    # main, plus ci/** so a change to the workflow itself can be verified on a
+    # branch without opening a pull request first. Other branches are covered by
+    # pull_request, which avoids running everything twice on a PR branch.
+    branches: [main, 'ci/**']
   pull_request:
   workflow_dispatch:
 
