@@ -4,10 +4,86 @@ A SQL Server 2022 schema for a Canadian accounting practice: personal (T1) and
 corporate (T2) returns, information slips, GST/HST filings, double-entry
 bookkeeping, payroll with CPP/EI, and an audit trail.
 
-It exists to be a **fixture** — something a test-automation harness can be
-pointed at, and something that can later be ported to PostgreSQL for a
-side-by-side comparison. Two consequences follow from that, and they shape
-almost every decision below:
+---
+
+## What this repository demonstrates
+
+An end-to-end migration proof of concept: convert a non-trivial SQL Server schema
+to PostgreSQL with AWS SCT, repair what the tool could not translate, and then
+**prove the two are equivalent by executing them side by side** rather than by
+reading the DDL.
+
+```
+  SQL Server 2022 fixture
+  39 tables · 9 views · 20 functions · 12 procedures · 4 triggers · 57 FKs
+            │
+            ▼
+  AWS Schema Conversion Tool  (scripts/convert-to-postgres.sh)
+  every object type converted at matching counts — but not all of them work
+            │
+            ▼
+  Errors found
+  · MERGE not translated at all → 3 procedures emitted incomplete
+  · 2 views emitted as (text, error_msg) stubs — PIVOT and OPENJSON
+  · --apply landed 38/39 tables and 40/57 FKs; client.Client rejected outright
+            │
+            ▼
+  Manual repair  (db/postgres/*.sql)
+  MERGE, OPENJSON, PIVOT, dynamic SQL, TVPs and DELETE TOP rewritten by hand
+  → 099_verify.sql green: 39 tables · 9 views · 20 functions · 12 procedures
+            │
+            ▼
+  Differential test suite  (tests/DbParity.sln)
+  136 xUnit tests · 81 data-driven SQL cases · one test body, both engines
+            │
+            ▼
+  3 bugs found in the hand-repaired port
+```
+
+### Why the last step is the point
+
+The conversion tool reports what it *could not* translate. It says nothing about
+what it translated **incorrectly** — and neither does a code review, because the
+defects below are all in code that reads correctly. Only executing both engines
+against identical inputs and comparing the results surfaces them.
+
+The suite exploits a property of this pair of databases: SQL Server's collation
+is `SQL_Latin1_General_CP1_CI_AS` and every PostgreSQL object was created
+unquoted, so **the same SQL string binds on both**. One test body, two engines,
+compared cell by cell.
+
+### The three bugs
+
+All in `db/postgres/010_stored_procedures.sql`, all invisible until executed:
+
+| Procedure | Defect |
+|---|---|
+| `usp_RunPayroll` | The year-to-date subquery uses `CROSS JOIN` but references an alias from an earlier `FROM` item — needs `CROSS JOIN LATERAL`. The T-SQL original used `CROSS APPLY`. |
+| `usp_RecalculateAllReturns` | The `EXCEPTION` handler drops both temp tables before the loop continues, so the next iteration hits a table that no longer exists. |
+| `usp_CloseFiscalYear` | The nested `CALL usp_PostJournalEntry(...)` omits the `INOUT` refcursor argument; PL/pgSQL requires a writable argument and will not fall back to the default. |
+
+Two further findings that neither the tool nor a review would produce:
+
+- **The 2023 tax year was never locked on PostgreSQL.** `021_seed_sample_data.sql`
+  locks it at the very end of the *sample* seed, and PostgreSQL only ever runs the
+  *reference* seed — so error 50011 could not be raised there at all.
+- **Audit payloads diverge for every row written after cutover.** SQL Server's
+  `FOR JSON` emits `"ClientCode"` and `"IsActive":true`; the port emits
+  `"clientcode"` and `"isactive":1`. Historical rows are identical, so only a
+  behavioural test catches it.
+
+See [`tests/README.md`](../tests/README.md) for how to run the suite, and
+[Converting to PostgreSQL with AWS SCT](#converting-to-postgresql-with-aws-sct)
+below for the conversion detail.
+
+---
+
+## About the fixture
+
+The SQL Server schema exists to be a **fixture** — something a test-automation
+harness can be pointed at, and something that could be ported to PostgreSQL for a
+side-by-side comparison. Two consequences follow from that, and they shape almost
+every decision below:
 
 - **It is deterministic.** No `NEWID()`, `RAND()`, or `GETDATE()` in any stored
   value. `tax.fn_FederalTax(2024, 100000)` returns `17427.32` today and next
