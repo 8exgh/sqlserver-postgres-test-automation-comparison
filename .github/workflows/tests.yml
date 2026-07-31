@@ -21,7 +21,7 @@ jobs:
   # The differential suite: 136 tests, one body per assertion, run against both
   # engines and compared cell by cell.
   parity:
-    name: parity suite
+    name: parity suite (is the Sql Server source the same as Postgres target?)
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -75,7 +75,7 @@ jobs:
   # The C++ t1report CLI, exercised end to end against both engines. Expected to
   # be fully green - there is no baseline machinery here, the exit code is enough.
   cli:
-    name: CLI suite
+    name: CLI suite (Is the C++ with Sql Server correct + same for Postgres?)
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -160,5 +160,55 @@ jobs:
         if: always()
         with:
           name: cli-results
+          path: artifacts/*.trx
+          if-no-files-found: warn
+
+  # The ASP.NET Core API, hosted in-process twice - once bound to each engine -
+  # and driven over HTTP. Expected to be fully green, so the exit code is the gate.
+  api:
+    name: API suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 10.0.x, not 8.0.x: CdnTax.Api targets net10.0 (see its csproj for why -
+      # EF Core 10 is what keeps Npgsql unified at the 10.0.3 DbParity.Core uses),
+      # and DbParity.Api.Tests has to share that framework because
+      # WebApplicationFactory loads the application into the test process.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Start both engines
+        run: docker compose up -d
+
+      - name: Apply the SQL Server schema
+        run: scripts/apply-sqlserver.sh
+
+      - name: Apply the PostgreSQL port
+        run: scripts/apply-postgres.sh
+
+      # ApiFixture only verifies that the two databases agree; like CliFixture and
+      # unlike ParityFixture it never replicates. The cross-engine tests compare
+      # responses from each, so without this they would fail on drifted fixtures.
+      - name: Replicate the sample data
+        run: scripts/replicate-to-postgres.sh
+
+      - name: Run DbParity.Api.Tests
+        run: |
+          dotnet test tests/DbParity.Api.Tests/DbParity.Api.Tests.csproj \
+            --logger "trx;LogFileName=api.trx" \
+            --results-directory artifacts
+
+      - name: Container logs
+        if: failure()
+        run: docker compose logs --tail 100
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: api-results
           path: artifacts/*.trx
           if-no-files-found: warn

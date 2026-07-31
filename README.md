@@ -2,11 +2,12 @@
 
 [![tests](https://github.com/8exgh/sqlserver-postgres-test-automation-comparison/actions/workflows/tests.yml/badge.svg)](https://github.com/8exgh/sqlserver-postgres-test-automation-comparison/actions/workflows/tests.yml)
 
-# Proof of concept: AWS Schema Conversion Tool + Automated Comparison Testing
+# Proof of concept:
+## AWS Schema Conversion Tool + Automated Comparison Testing
 
-## Scope is Sql Server -> AWS Schema Conversion Tool -> Postgres -> Automate testing (comparison)
+### Scope is Sql Server -> AWS Schema Conversion Tool -> Postgres -> Automate testing (comparison)
 
-# Domain is Canadian Tax & Accounting — SQL Server schema
+### Domain is Canadian Tax & Accounting (SQL Server schema)
 
 A SQL Server 2022 schema for a Canadian accounting practice: personal (T1) and
 corporate (T2) returns, information slips, GST/HST filings, double-entry
@@ -17,8 +18,8 @@ bookkeeping, payroll with CPP/EI, and an audit trail.
 ## What this repository demonstrates
 
 1) Migrating and testing Sql Server -> Postgres via AWS Schema Conversion Tool (command line)and custom tests
-2) Proof of concept C++ report feature flagged to both sql server + postgres
-3) Proof of concept C# web api feature flagged to both sql server + postgres
+2) Proof of concept C++ report feature flagged to both sql server + postgres (with automate tests)
+3) Proof of concept C# web api feature flagged to both sql server + postgres (with Xunit tests)
 4) Running the DbParity automated tests in Github CI/CD
 
 # Walkthrough of the problems found
@@ -49,11 +50,15 @@ bookkeeping, payroll with CPP/EI, and an audit trail.
   3 bugs found in the hand-repaired port between Sql Server + Postgres
             │
             ▼
+  Fix bugs
+            │
+            ▼
+  Tests pass
 ```
 
 Comparing the Sql Server / Postgres with DbParity tests was important because the Schema Conversion Tool does not say what translated incorrectly.
 
-The three bugs DbParity tests found:
+### The three bugs DbParity tests found
 
 usp_RunPayroll -> The year-to-date subquery uses CROSS JOIN but references an alias from an earlier FROM item; needs CROSS JOIN LATERAL. The T-SQL original used CROSS APPLY.
 

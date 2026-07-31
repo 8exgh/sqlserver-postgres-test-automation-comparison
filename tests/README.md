@@ -100,10 +100,56 @@ The whole CLI suite takes ~22s.
 dotnet test tests/DbParity.Cli.Tests/DbParity.Cli.Tests.csproj   # requires both containers up
 ```
 
-Mutating tests run inside a rollback scope on both engines, so the fixture is
-unchanged and test order never matters. Error-path tests deliberately do **not** —
-SQL Server's `XACT_ABORT` discipline means a doomed transaction can neither commit
-nor roll back to a savepoint.
+A third project, **`DbParity.Api.Tests`** (75 tests), does the same for the
+ASP.NET Core API in `api/`. `WebApplicationFactory` hosts `CdnTax.Api` twice
+in-process — once with `Database:Provider=SqlServer`, once with `Postgres` — and
+each test drives it over HTTP. Routing, model binding, EF Core translation, the
+database, error classification and JSON serialization are all in the loop; only
+Kestrel is not, and that is the one layer that cannot differ between engines.
+
+| File | What it does |
+|---|---|
+| `ReadEndpointTests` | Health, client list with every filter, paging, get-by-id, engagements, lookups. |
+| `WriteEndpointTests` | POST/PUT/DELETE, validation 400s, duplicate 409, FK 400, optimistic-concurrency 409. |
+| `CrossEngineParityTests` | The headline: identical requests to each host must return identical JSON. |
+| `ApiCollationTests` | Where the API genuinely diverges — asserted, not hidden. See below. |
+
+The flag is set through configuration rather than by swapping the `DbContext`
+registration, so the path exercised is the one `Program.cs` actually takes in
+production. `Program.cs` gained one line — `public partial class Program;` — because
+top-level statements compile to an *internal* `Program` that the test assembly
+cannot reach; it changes nothing at runtime.
+
+There is no transaction to roll back here: a request has committed by the time the
+response arrives. Instead every created row is registered with a `ClientLifecycle`
+and deleted in `DisposeAsync`, pass or fail, under the reserved `APITEST-` code
+prefix that `ApiFixture` also sweeps at session start. Verified: 25 clients before
+and after, on both engines, across repeated runs. `audit.ChangeLog` rows *are* left
+behind — that table is append-only and recording them is the audit trail working,
+exactly as `db/README.md` notes for `099_verify.sql`.
+
+**`ApiCollationTests` is the one that matters most.** The `search` parameter passes
+the caller's text straight into `EF.Functions.Like`. SQL Server's collation makes
+that case-insensitive; PostgreSQL's `LIKE` is not. So `?search=chen` returns matches
+today and an empty list after the migration — no error, no warning, and
+indistinguishable from "no matches". Both engines are behaving correctly, so no
+parity test would ever catch it; only naming the difference does. The `province` and
+`type` filters are immune because the endpoint upper-cases them first, which is also
+the fix. If someone later applies it, these tests fail and say so.
+
+```bash
+dotnet test tests/DbParity.Api.Tests/DbParity.Api.Tests.csproj   # requires both containers up
+```
+
+> `CdnTax.Api` and `DbParity.Api.Tests` target **net10.0**; the other two test
+> projects stay on net8.0. Building `tests/DbParity.sln` as a whole therefore needs
+> the .NET 10 SDK. CI runs each project separately, so the parity and CLI jobs still
+> use 8.0.x.
+
+Mutating tests in `DbParity.Tests` run inside a rollback scope on both engines, so
+the fixture is unchanged and test order never matters. Error-path tests deliberately
+do **not** — SQL Server's `XACT_ABORT` discipline means a doomed transaction can
+neither commit nor roll back to a savepoint.
 
 ---
 

@@ -58,7 +58,7 @@ public sealed record PractitionerJson(
     int PractitionerId, string FullName, string? Designation, string Email, bool IsPartner, bool IsActive);
 
 public sealed record TaxYearJson(
-    short Year,
+    short TaxYear,
     DateOnly T1FilingDeadline,
     DateOnly SelfEmployedDeadline,
     DateOnly RrspDeadline,
