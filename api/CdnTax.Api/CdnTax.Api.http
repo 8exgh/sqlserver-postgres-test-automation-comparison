@@ -1,0 +1,123 @@
+### CdnTax.Api - the same requests against both engines.
+###
+### Start one or both:
+###   dotnet run --project api/CdnTax.Api --urls http://localhost:5080 --Database:Provider=SqlServer
+###   dotnet run --project api/CdnTax.Api --urls http://localhost:5081 --Database:Provider=Postgres
+###
+### Every GET below should return byte-identical JSON on both ports. That is the
+### point: the only thing that differs is the "provider" field of /api/health.
+
+@sqlserver = http://localhost:5080
+@postgres = http://localhost:5081
+@host = {{sqlserver}}
+
+### Which engine am I talking to?
+GET {{host}}/api/health
+
+### List clients, with filters
+GET {{host}}/api/clients?province=ON&active=true&take=5
+
+### Search by display name or client code
+GET {{host}}/api/clients?search=Chen
+
+### Corporations only
+GET {{host}}/api/clients?type=C&take=5
+
+### One client
+GET {{host}}/api/clients/1
+
+### That client's engagements
+GET {{host}}/api/clients/1/engagements
+
+### Reference lookups
+GET {{host}}/api/provinces
+
+###
+GET {{host}}/api/tax-years
+
+###
+GET {{host}}/api/practitioners
+
+### Create an individual. Note what comes back: displayName is computed by the
+### database, and rowVersion is server-assigned - by a native ROWVERSION on SQL
+### Server and by trigger client.tr_client_biu on PostgreSQL.
+POST {{host}}/api/clients
+Content-Type: application/json
+
+{
+  "clientCode": "API-0001",
+  "clientType": "I",
+  "firstName": "Ada",
+  "lastName": "Lovelace",
+  "dateOfBirth": "1815-12-10",
+  "sin": "123456789",
+  "maritalStatus": "Single",
+  "provinceCode": "ON",
+  "onboardedDate": "2026-07-30",
+  "isActive": true
+}
+
+### Update. rowVersion must be the value you last read; substitute it below.
+### Sending it twice is the concurrency test - the second call returns 409.
+PUT {{host}}/api/clients/26
+Content-Type: application/json
+
+{
+  "clientCode": "API-0001",
+  "clientType": "I",
+  "firstName": "Ada",
+  "lastName": "Byron",
+  "dateOfBirth": "1815-12-10",
+  "sin": "123456789",
+  "maritalStatus": "Married",
+  "provinceCode": "BC",
+  "onboardedDate": "2026-07-30",
+  "isActive": true,
+  "rowVersion": 2705
+}
+
+### Delete
+DELETE {{host}}/api/clients/26
+
+### 400 - CK_Client_TypeShape, caught before it reaches the database
+POST {{host}}/api/clients
+Content-Type: application/json
+
+{
+  "clientCode": "API-BAD1",
+  "clientType": "I",
+  "firstName": "X",
+  "lastName": "Y",
+  "dateOfBirth": "1990-01-01",
+  "legalName": "Corporations only",
+  "provinceCode": "ON",
+  "onboardedDate": "2026-07-30"
+}
+
+### 409 - UQ_Client_ClientCode. Same status on both engines, different driver text.
+POST {{host}}/api/clients
+Content-Type: application/json
+
+{
+  "clientCode": "IND-0001",
+  "clientType": "I",
+  "firstName": "Dup",
+  "lastName": "Licate",
+  "dateOfBirth": "1990-01-01",
+  "provinceCode": "ON",
+  "onboardedDate": "2026-07-30"
+}
+
+### 400 - FK_Client_Province
+POST {{host}}/api/clients
+Content-Type: application/json
+
+{
+  "clientCode": "API-BAD2",
+  "clientType": "I",
+  "firstName": "No",
+  "lastName": "Where",
+  "dateOfBirth": "1990-01-01",
+  "provinceCode": "ZZ",
+  "onboardedDate": "2026-07-30"
+}

@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RootNamespace>CdnTax.Api</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    net10.0/EF Core 10 is forced rather than preferred. EF Core 9's Npgsql provider
+    depends on Npgsql 9.x, which would conflict with the Npgsql 10.0.3 that
+    DbParity.Core already references. At these versions the graph unifies with no
+    upgrades: the SQL Server provider brings Microsoft.Data.SqlClient 6.1.1 and the
+    Npgsql provider pins Npgsql 10.0.3 - both exactly what DbParity.Core uses.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.10" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+  </ItemGroup>
+
+  <!--
+    Deliberately no Microsoft.AspNetCore.OpenApi: at 10.0.10 it drags in
+    Microsoft.OpenApi 2.0.0, which carries a high-severity advisory
+    (GHSA-v5pm-xwqc-g5wc) that TreatWarningsAsErrors turns into NU1903 and a
+    failed restore. Overriding to a patched 2.11.0 would be an unvetted jump of
+    eleven minors past what the package was compiled against. CdnTax.Api.http
+    documents the surface instead.
+  -->
+
+  <!-- Connection strings come from TargetConfig, the same source the parity suite
+       and the bash scripts use, so credentials are declared in exactly one place. -->
+  <ItemGroup>
+    <ProjectReference Include="../../tests/DbParity.Core/DbParity.Core.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -110,6 +110,11 @@ DECLARE
         ORDER BY tb.accountnumber NULLS FIRST;
     var_journalEntryId INTEGER;
     var_closingLines acct.journallinetype[] DEFAULT '{}';
+    /* usp_PostJournalEntry declares INOUT p_refcur. Letting it fall back to its */
+    /* DEFAULT is accepted from a top-level CALL but not from PL/pgSQL, which */
+    /* requires a writable target for every output parameter. The cursor it */
+    /* returns is not consumed here; this variable only satisfies that rule. */
+    var_postCursor REFCURSOR;
 BEGIN
     par_PostedBy := COALESCE(par_PostedBy, CURRENT_USER);
     SELECT
@@ -177,7 +182,7 @@ BEGIN
     BEGIN
         /* Nested call: usp_PostJournalEntry sees @@TRANCOUNT > 0 and takes a */
         /* savepoint instead of opening its own transaction. */
-        CALL acct.usp_postjournalentry(par_ClientId := par_ClientId, par_FiscalYearId := par_FiscalYearId, par_EntryDate := var_endDate, par_Description := 'Year-end closing entry', par_Lines := var_closingLines, par_Source := 'YearEnd', par_PostedBy := par_PostedBy, par_JournalEntryId => var_journalEntryId);
+        CALL acct.usp_postjournalentry(par_ClientId := par_ClientId, par_FiscalYearId := par_FiscalYearId, par_EntryDate := var_endDate, par_Description := 'Year-end closing entry', par_Lines := var_closingLines, par_Source := 'YearEnd', par_PostedBy := par_PostedBy, par_JournalEntryId => var_journalEntryId, p_refcur => var_postCursor);
         UPDATE acct.fiscalyear
         SET isclosed = 1, closedat = timezone('UTC', LOCALTIMESTAMP(6))
             WHERE fiscalyearid = par_FiscalYearId;
@@ -707,8 +712,10 @@ BEGIN
                 END AS periodsperyear) AS freq
             LEFT JOIN LATERAL (SELECT
                 CAST (ROUND(e.annualsalary / freq.periodsperyear, 2) AS NUMERIC(19, 2)) AS grosspay) AS pay ON true
-            CROSS JOIN
             /* Year-to-date gross for this employee before the current period. */
+            /* LATERAL is required: the subquery correlates to e.employeeid. It */
+            /* aggregates, so it always yields exactly one row and CROSS is safe. */
+            CROSS JOIN LATERAL
             (SELECT
                 COALESCE(SUM(prior.grosspay), 0) AS ytdgross
                 FROM payroll.paystub AS prior
@@ -1237,6 +1244,11 @@ DECLARE
     error_catch$ERROR_MESSAGE TEXT;
     var_errNumber INTEGER;
     var_errMessage VARCHAR(400);
+    /* usp_CalculateT1 declares INOUT p_refcur; PL/pgSQL will not let that fall */
+    /* back to its DEFAULT, so it needs a writable target. Reset before each */
+    /* iteration: OPEN reuses a non-null refcursor's portal name, and the second */
+    /* pass would then fail with "cursor already in use". */
+    var_calcCursor REFCURSOR;
 BEGIN
     DROP TABLE IF EXISTS results$usp_recalculateallreturns;
     CREATE TEMPORARY TABLE results$usp_recalculateallreturns
@@ -1262,11 +1274,12 @@ BEGIN
             FROM ids$usp_recalculateallreturns
             ORDER BY t1returnid NULLS FIRST
             LIMIT 1;
-        var_errMessage := LEFT(error_catch$ERROR_MESSAGE, 400);
-        var_errNumber := error_catch$ERROR_NUMBER;
-
         BEGIN
-            CALL tax.usp_calculatet1(par_T1ReturnId := var_id, par_AssessmentType := 'Recalculation');
+            var_calcCursor := NULL;
+            CALL tax.usp_calculatet1(par_T1ReturnId := var_id, par_AssessmentType := 'Recalculation', p_refcur => var_calcCursor);
+            IF var_calcCursor IS NOT NULL THEN
+                CLOSE var_calcCursor;
+            END IF;
             INSERT INTO results$usp_recalculateallreturns (t1returnid, succeeded)
             VALUES (var_id, 1);
             EXCEPTION
@@ -1277,12 +1290,23 @@ BEGIN
                     /* depends on usp_CalculateT1 not leaving a doomed transaction */
                     /* behind - which is exactly what the XACT_ABORT discipline */
                     /* described at the top of this file guarantees. */
-                    error_catch$ERROR_NUMBER := '0';
                     error_catch$ERROR_SEVERITY := '0';
                     error_catch$ERROR_LINE := '0';
                     error_catch$ERROR_PROCEDURE := 'USP_RECALCULATEALLRETURNS';
                     GET STACKED DIAGNOSTICS error_catch$ERROR_STATE = RETURNED_SQLSTATE,
                         error_catch$ERROR_MESSAGE = MESSAGE_TEXT;
+
+                    /* Capture after GET STACKED DIAGNOSTICS, not before the block: */
+                    /* read earlier these still held the previous iteration's error, */
+                    /* so every failure was reported with its predecessor's message. */
+                    error_catch$ERROR_NUMBER := error_catch$ERROR_STATE;
+                    var_errMessage := LEFT(error_catch$ERROR_MESSAGE, 400);
+                    var_errNumber := CASE
+                        WHEN error_catch$ERROR_STATE ~ '^[0-9]+$'
+                            THEN error_catch$ERROR_STATE::INTEGER
+                        ELSE 0
+                    END;
+
                     INSERT INTO results$usp_recalculateallreturns (t1returnid, succeeded, errornumber, errormessage)
                     VALUES (var_id, 0, var_errNumber, var_errMessage);
 
@@ -1291,8 +1315,10 @@ BEGIN
                         /* stop the loop */
                         EXIT;
                     END IF;
-                    DROP TABLE IF EXISTS results$usp_recalculateallreturns;
-                    DROP TABLE IF EXISTS ids$usp_recalculateallreturns;
+                    /* No DROP TABLE here. The converter hoisted the procedure's */
+                    /* end-of-run cleanup into this handler, so the first failure */
+                    /* destroyed the working tables and every later iteration died */
+                    /* with "relation ids$usp_recalculateallreturns does not exist". */
         END;
         DELETE FROM ids$usp_recalculateallreturns
             WHERE t1returnid = var_id;

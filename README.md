@@ -1,3 +1,7 @@
+# By Sean Bennett
+# Proof of concept: AWS Schema Conversion Tool + Automated Comparison Testing
+## Sql Server -> AWS Schema Tool -> Postgres -> Automate testing (comparison)
+
 # Canadian Tax & Accounting — SQL Server schema
 
 A SQL Server 2022 schema for a Canadian accounting practice: personal (T1) and
@@ -8,24 +12,24 @@ bookkeeping, payroll with CPP/EI, and an audit trail.
 
 ## What this repository demonstrates
 
-An end-to-end migration proof of concept: convert a non-trivial SQL Server schema
-to PostgreSQL with AWS SCT, repair what the tool could not translate, and then
-**prove the two are equivalent by executing them side by side** rather than by
-reading the DDL.
+1) Migrating and testing Sql Server -> Postgres via AWS Schema Conversion Tool and custom tests
+2) Proof of concept C++ report feature flagged to both sql server + postgres
+3) Proof of concept C# web api feature flagged to both sql server + postgres
+
+# Walkthrough of the problems found
 
 ```
-  SQL Server 2022 fixture
+  SQL Server 2022
   39 tables · 9 views · 20 functions · 12 procedures · 4 triggers · 57 FKs
             │
             ▼
-  AWS Schema Conversion Tool  (scripts/convert-to-postgres.sh)
-  every object type converted at matching counts — but not all of them work
+  AWS Schema Conversion Tool  (to Postgres)
             │
             ▼
   Errors found
-  · MERGE not translated at all → 3 procedures emitted incomplete
+  · MERGE not translated at all
   · 2 views emitted as (text, error_msg) stubs — PIVOT and OPENJSON
-  · --apply landed 38/39 tables and 40/57 FKs; client.Client rejected outright
+  · apply landed 38/39 tables and 40/57 FKs; client.Client rejected outright
             │
             ▼
   Manual repair  (db/postgres/*.sql)
@@ -38,19 +42,23 @@ reading the DDL.
             │
             ▼
   3 bugs found in the hand-repaired port
+            │
+            ▼
+  manually fix the three bugs
+            │
+            ▼
+  tests pass
 ```
 
-### Why the last step is the point
+Comparing the Sql Server / Postgres with DbParity tests was important because the Schema Conversion Tool does not say what translated incorrectly.
 
-The conversion tool reports what it *could not* translate. It says nothing about
-what it translated **incorrectly** — and neither does a code review, because the
-defects below are all in code that reads correctly. Only executing both engines
-against identical inputs and comparing the results surfaces them.
+The three bugs DbParity tests found:
 
-The suite exploits a property of this pair of databases: SQL Server's collation
-is `SQL_Latin1_General_CP1_CI_AS` and every PostgreSQL object was created
-unquoted, so **the same SQL string binds on both**. One test body, two engines,
-compared cell by cell.
+usp_RunPayroll -> The year-to-date subquery uses CROSS JOIN but references an alias from an earlier FROM item — needs CROSS JOIN LATERAL. The T-SQL original used CROSS APPLY.
+
+usp_RecalculateAllReturns -> The EXCEPTION handler drops both temp tables before the loop continues, so the next iteration hits a table that no longer exists.
+
+usp_CloseFiscalYear -> The nested CALL usp_PostJournalEntry(...) omits the INOUT refcursor argument; PL/pgSQL requires a writable argument and will not fall back to the default.
 
 ### The three bugs
 

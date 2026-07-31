@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <!--
+    DbParity.Core is referenced only for TargetConfig (repository root and the
+    same .env resolution the rest of the suite uses) and for the connections the
+    fixture's precondition check needs. The tests themselves never talk to a
+    database: they exercise the compiled C++ binary, which does its own
+    connecting.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="../DbParity.Core/DbParity.Core.csproj" />
+  </ItemGroup>
+
+</Project>
