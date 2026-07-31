@@ -17,3 +17,7 @@ lib/*.jar
 bin/
 obj/
 app/build/
+
+# Test results (.trx). Written by --results-directory, both locally and by
+# .github/workflows/tests.yml, which uploads them as a run artifact instead.
+artifacts/

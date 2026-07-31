@@ -61,3 +61,11 @@ app.MapLookupEndpoints();
 app.Logger.LogInformation("CdnTax.Api starting against {Provider}", provider);
 
 app.Run();
+
+/// <summary>
+/// Top-level statements compile to an internal Program class, which
+/// WebApplicationFactory&lt;TEntryPoint&gt; cannot reach from the test assembly.
+/// Declaring the partial makes it public without changing anything at runtime, so
+/// tests/DbParity.Api.Tests can host this exact application in-process.
+/// </summary>
+public partial class Program;

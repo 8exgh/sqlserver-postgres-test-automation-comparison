@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      net10.0 to match CdnTax.Api. WebApplicationFactory hosts the application
+      in-process, so the test assembly has to load it, and that means sharing its
+      target framework. The other two test projects stay on net8.0; nothing here
+      forces them to move.
+    -->
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RootNamespace>DbParity.Api.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.10" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <!--
+    The API brings DbParity.Core transitively (for TargetConfig), which is also
+    where the fixture's precondition connections come from.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="../../api/CdnTax.Api/CdnTax.Api.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,32 @@
+# Tests that are expected to FAIL, one fully-qualified name per line.
+#
+# This file is a gate in both directions. .github/scripts/assert-baseline.py fails
+# the build if a test outside this list fails, and equally if a test named here
+# starts passing — a stale entry is itself a failure, the same rule
+# tests/DbParity.Tests/policy/known-schema-divergences.txt lives by.
+#
+# ---------------------------------------------------------------------------
+# Both entries below reduce to one structural difference, and it is not a defect
+# in the port.
+#
+# On SQL Server a nested procedure's SELECT flows all the way out to the client,
+# so the caller's result sets include the callee's. In PostgreSQL a procedure's
+# result sets are its declared INOUT refcursor parameters — a fixed list, fixed
+# at definition time — so nothing surfaces unless the caller re-exports it.
+#
+#   CloseFiscalYear:        sqlserver returned  2 result set(s), postgres returned 1
+#   RecalculateAllReturns:  sqlserver returned 18 result set(s), postgres returned 2
+#
+# usp_CloseFiscalYear could be made to match by giving it a second INOUT
+# refcursor; usp_RecalculateAllReturns could not, because its count is
+# data-dependent (one set per return processed) and no fixed parameter list can
+# express that. Closing the first alone would bake arguably incidental SQL Server
+# behaviour into a public PostgreSQL signature, so both are left as-is.
+#
+# The three procedure defects this suite originally found are all fixed and
+# passing, including RunPayroll_agrees. See tests/README.md, "Known failures" and
+# "The one remaining divergence: nested result sets".
+# ---------------------------------------------------------------------------
+
+DbParity.Tests.ProcedureParityTests.RecalculateAllReturns_agrees
+DbParity.Tests.ProcedureParityTests.CloseFiscalYear_agrees
