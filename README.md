@@ -58,14 +58,6 @@ bookkeeping, payroll with CPP/EI, and an audit trail.
 
 Comparing the Sql Server / Postgres with DbParity tests was important because the Schema Conversion Tool does not say what translated incorrectly.
 
-### The three bugs DbParity tests found
-
-usp_RunPayroll -> The year-to-date subquery uses CROSS JOIN but references an alias from an earlier FROM item; needs CROSS JOIN LATERAL. The T-SQL original used CROSS APPLY.
-
-usp_RecalculateAllReturns -> The EXCEPTION handler drops both temp tables before the loop continues, so the next iteration hits a table that no longer exists.
-
-usp_CloseFiscalYear -> The nested CALL usp_PostJournalEntry(...) omits the INOUT refcursor argument; PL/pgSQL requires a writable argument and will not fall back to the default.
-
 ### The three bugs
 
 All in `db/postgres/010_stored_procedures.sql`, all invisible until executed:
