@@ -1,8 +1,12 @@
-# By Sean Bennett
-# Proof of concept: AWS Schema Conversion Tool + Automated Comparison Testing
-## Sql Server -> AWS Schema Tool -> Postgres -> Automate testing (comparison)
+#  By Sean Bennett
 
-# Canadian Tax & Accounting — SQL Server schema
+[![tests](https://github.com/8exgh/sqlserver-postgres-test-automation-comparison/actions/workflows/tests.yml/badge.svg)](https://github.com/8exgh/sqlserver-postgres-test-automation-comparison/actions/workflows/tests.yml)
+
+# Proof of concept: AWS Schema Conversion Tool + Automated Comparison Testing
+
+## Scope is Sql Server -> AWS Schema Conversion Tool -> Postgres -> Automate testing (comparison)
+
+# Domain is Canadian Tax & Accounting — SQL Server schema
 
 A SQL Server 2022 schema for a Canadian accounting practice: personal (T1) and
 corporate (T2) returns, information slips, GST/HST filings, double-entry
@@ -12,9 +16,10 @@ bookkeeping, payroll with CPP/EI, and an audit trail.
 
 ## What this repository demonstrates
 
-1) Migrating and testing Sql Server -> Postgres via AWS Schema Conversion Tool and custom tests
+1) Migrating and testing Sql Server -> Postgres via AWS Schema Conversion Tool (command line)and custom tests
 2) Proof of concept C++ report feature flagged to both sql server + postgres
 3) Proof of concept C# web api feature flagged to both sql server + postgres
+4) Running the DbParity automated tests in Github CI/CD
 
 # Walkthrough of the problems found
 
@@ -41,20 +46,16 @@ bookkeeping, payroll with CPP/EI, and an audit trail.
   136 xUnit tests · 81 data-driven SQL cases · one test body, both engines
             │
             ▼
-  3 bugs found in the hand-repaired port
+  3 bugs found in the hand-repaired port between Sql Server + Postgres
             │
             ▼
-  manually fix the three bugs
-            │
-            ▼
-  tests pass
 ```
 
 Comparing the Sql Server / Postgres with DbParity tests was important because the Schema Conversion Tool does not say what translated incorrectly.
 
 The three bugs DbParity tests found:
 
-usp_RunPayroll -> The year-to-date subquery uses CROSS JOIN but references an alias from an earlier FROM item — needs CROSS JOIN LATERAL. The T-SQL original used CROSS APPLY.
+usp_RunPayroll -> The year-to-date subquery uses CROSS JOIN but references an alias from an earlier FROM item; needs CROSS JOIN LATERAL. The T-SQL original used CROSS APPLY.
 
 usp_RecalculateAllReturns -> The EXCEPTION handler drops both temp tables before the loop continues, so the next iteration hits a table that no longer exists.
 
@@ -80,7 +81,7 @@ Two further findings that neither the tool nor a review would produce:
   `"clientcode"` and `"isactive":1`. Historical rows are identical, so only a
   behavioural test catches it.
 
-See [`tests/README.md`](../tests/README.md) for how to run the suite, and
+See [`tests/README.md`](tests/README.md) for how to run the suite, and
 [Converting to PostgreSQL with AWS SCT](#converting-to-postgresql-with-aws-sct)
 below for the conversion detail.
 

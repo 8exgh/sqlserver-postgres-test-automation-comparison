@@ -1,0 +1,161 @@
+name: tests
+
+# The point of running this in CI is the clean slate. Locally the containers are
+# long-lived and their state drifts from db/*.sql; here both are created from
+# scratch, the schemas are applied from the committed SQL, and only then is
+# "the two engines agree" re-established.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The differential suite: 136 tests, one body per assertion, run against both
+  # engines and compared cell by cell.
+  parity:
+    name: parity suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # ubuntu-latest is amd64, so the amd64-only SQL Server image runs natively
+      # rather than emulated as it does on Apple Silicon. No .env is needed: every
+      # script falls back to defaults that match docker-compose.yml exactly.
+      - name: Start both engines
+        run: docker compose up -d
+
+      - name: Apply the SQL Server schema
+        run: scripts/apply-sqlserver.sh
+
+      - name: Apply the PostgreSQL port
+        run: scripts/apply-postgres.sh
+
+      # No replication step: ParityFixture builds a FixtureReplicator in-process at
+      # session start and gates on per-table row counts. DBPARITY_SKIP_REPLICATION
+      # is deliberately left unset - tests/README.md calls it unsafe for a real run.
+      #
+      # The non-zero exit is swallowed on purpose. Two tests are expected to fail,
+      # so the .trx is the gate, not the exit code.
+      - name: Run DbParity.Tests
+        run: |
+          dotnet test tests/DbParity.Tests/DbParity.Tests.csproj \
+            --logger "trx;LogFileName=parity.trx" \
+            --results-directory artifacts || true
+
+      - name: Assert the 134/2 baseline
+        run: |
+          python3 .github/scripts/assert-baseline.py \
+            artifacts/parity.trx .github/expected-failures.txt
+
+      - name: Container logs
+        if: failure()
+        run: docker compose logs --tail 100
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: parity-results
+          path: artifacts/*.trx
+          if-no-files-found: warn
+
+  # The C++ t1report CLI, exercised end to end against both engines. Expected to
+  # be fully green - there is no baseline machinery here, the exit code is enough.
+  cli:
+    name: CLI suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # scripts/setup-odbc.sh cannot be used here - it hard-fails without Homebrew.
+      # This is the apt equivalent. app/CMakeLists.txt gates its Homebrew hints
+      # behind find_program(brew), so with brew absent it falls through to these
+      # system paths.
+      - name: Install the C++ toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake g++ libpq-dev unixodbc-dev tdsodbc
+
+      # app/src/sqlserver_source.cpp connects with DRIVER={FreeTDS}, so the driver
+      # has to be registered under exactly that name. Resolve the .so rather than
+      # hardcoding an architecture path, and fail loudly if it is not where dpkg
+      # put it.
+      - name: Register the FreeTDS ODBC driver
+        run: |
+          # No pipefail here on purpose: grep closing the pipe early would leave
+          # dpkg killed by SIGPIPE and take the step down with it.
+          set -eu
+          files=$(dpkg -L tdsodbc)
+          driver=$(echo "$files" | grep 'libtdsodbc\.so$' | head -n1)
+          setup=$(echo "$files" | grep 'libtdsS\.so$' | head -n1)
+
+          if [ -z "$driver" ]; then
+            echo "::error::tdsodbc is installed but libtdsodbc.so is not in its file list."
+            echo "$files"
+            exit 1
+          fi
+          echo "FreeTDS driver: $driver"
+
+          sudo tee /etc/odbcinst.ini >/dev/null <<INI
+          [FreeTDS]
+          Description = FreeTDS Driver
+          Driver      = $driver
+          ${setup:+Setup       = $setup}
+          INI
+          odbcinst -q -d
+
+      - name: Start both engines
+        run: docker compose up -d
+
+      - name: Apply the SQL Server schema
+        run: scripts/apply-sqlserver.sh
+
+      - name: Apply the PostgreSQL port
+        run: scripts/apply-postgres.sh
+
+      # CliFixture only verifies that the row counts match; unlike ParityFixture it
+      # never replicates. Without this the fixture's precondition check fails.
+      - name: Replicate the sample data
+        run: scripts/replicate-to-postgres.sh
+
+      # CliFixture would run cmake itself if the binary were missing, but building
+      # it here attributes a toolchain failure to a build step rather than burying
+      # it in a test error.
+      - name: Build t1report
+        run: |
+          cmake -S app -B app/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build app/build
+
+      - name: Run DbParity.Cli.Tests
+        run: |
+          dotnet test tests/DbParity.Cli.Tests/DbParity.Cli.Tests.csproj \
+            --logger "trx;LogFileName=cli.trx" \
+            --results-directory artifacts
+
+      - name: Container logs
+        if: failure()
+        run: docker compose logs --tail 100
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cli-results
+          path: artifacts/*.trx
+          if-no-files-found: warn
