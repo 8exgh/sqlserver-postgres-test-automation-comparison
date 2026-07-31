@@ -5,3 +5,7 @@ llm/
 build/
 lib/jdbc/
 db/postgres/generated/
+
+# .NET build output for tests/DbParity.sln
+bin/
+obj/

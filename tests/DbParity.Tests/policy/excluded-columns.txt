@@ -1,0 +1,31 @@
+# Columns excluded from VALUE comparison, each with the reason it cannot match.
+#
+# Exclusion here removes a column from the data comparison only. SchemaParityTests
+# still asserts every one of these exists, carries the type the mapping declares,
+# and has the same nullability -- so the divergence is pinned down in code rather
+# than quietly tolerated.
+#
+# The list is deliberately short. Because SQL Server is the source of truth and
+# scripts/replicate-to-postgres.sh copies rows verbatim, the columns one would
+# normally expect to diverge do NOT: CreatedAt, UpdatedAt, ChangedAt, PostedAt,
+# AssessedOn, FiledAt and ClosedAt are copied wall-clock values, and ChangedBy /
+# PostedBy carry SQL Server's 'sa' into PostgreSQL unchanged. All of them are
+# compared, and they match.
+#
+# Format: schema.table.column   # reason
+
+# --- type-incompatible by construction -------------------------------------
+client.client.rowversion            # SQL Server ROWVERSION is an 8-byte binary counter; PostgreSQL has no equivalent and the port emulates it with a bigint fed by client.tr_Client_BIU. The replicator converts big-endian so the ORDERING is preserved, but a hex string and an integer are not the same value.
+
+# --- independently seeded surrogate keys -----------------------------------
+# ref.* is NOT replicated: each engine seeds it from its own
+# 020_seed_reference_data.sql, which keeps that comparison a real test. The rows
+# are identical but the identity values are handed out in a different order, so
+# ref.TaxBracketId 39 on SQL Server is 34 on PostgreSQL.
+#
+# That is only safe because nothing references these columns. SchemaParityTests
+# asserts no foreign key targets a ref surrogate key; if one is ever added, that
+# assertion fails and replication has to remap them.
+ref.taxbracket.taxbracketid         # identity assigned in seed order, which differs per engine
+ref.salestaxrate.salestaxrateid     # identity assigned in seed order, which differs per engine
+ref.statutoryholiday.statutoryholidayid  # identity assigned in seed order, which differs per engine

@@ -39,7 +39,8 @@ else
       DROP SCHEMA IF EXISTS ${PGDATABASE_}_ref, ${PGDATABASE_}_client, ${PGDATABASE_}_tax,
                             ${PGDATABASE_}_acct, ${PGDATABASE_}_payroll, ${PGDATABASE_}_audit,
                             ${PGDATABASE_}_util, ${PGDATABASE_}_dbo CASCADE;
-      DROP SCHEMA IF EXISTS aws_sqlserver_ext CASCADE;" >/dev/null
+      DROP SCHEMA IF EXISTS aws_sqlserver_ext, aws_sqlserver_ext_data CASCADE;
+      DROP EXTENSION IF EXISTS \"uuid-ossp\" CASCADE;" >/dev/null
 fi
 
 exec "$REPO_ROOT/scripts/apply-postgres.sh" "$@"

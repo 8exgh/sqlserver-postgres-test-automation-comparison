@@ -1,0 +1,21 @@
+# Structural differences that are correct, with the reason each one is correct.
+#
+# A row listed here is dropped from BOTH sides of the named case before
+# comparison. This is the same discipline as excluded-columns.txt: the exception
+# is written down, reviewed in a diff, and carries its justification -- rather
+# than being hidden inside a WHERE clause in the case SQL where nobody would
+# find it.
+#
+# Format:  <case-id>  <row-key>  # reason
+#
+# The row key is built from the columns named by the case's @divergence-key
+# directive, joined with '.' and lowercased.
+
+# --- schema/constraints ------------------------------------------------------
+# SQL Server enforces the audit payloads are JSON with a CHECK constraint
+# (ISJSON(x) = 1). The port stores them as jsonb instead, and the type itself
+# makes the constraint redundant -- an invalid document cannot be stored at all.
+# This is the mapping db/README.md's feature map prescribes: "ISJSON(x) = 1 ->
+# jsonb column type -- The type enforces it".
+schema/constraints  audit.changelog.ck_changelog_newjson  # replaced by the jsonb column type
+schema/constraints  audit.changelog.ck_changelog_oldjson  # replaced by the jsonb column type
